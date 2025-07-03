@@ -19,4 +19,4 @@ services:
       - key: DISPLAY_THINKING_IN_CONSOLE
         value: true
       - key: ENABLE_GOOGLE_SEARCH
-        value: true
+        value: false
