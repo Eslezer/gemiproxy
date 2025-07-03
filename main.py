@@ -13,7 +13,7 @@ TEMPERATURE = float(os.getenv('TEMPERATURE', '0.8'))
 ENABLE_NSFW = os.getenv('ENABLE_NSFW', 'True').lower() == 'true'
 ENABLE_THINKING = os.getenv('ENABLE_THINKING', 'True').lower() == 'true'
 DISPLAY_THINKING_IN_CONSOLE = os.getenv('DISPLAY_THINKING_IN_CONSOLE', 'True').lower() == 'true'
-ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'True').lower() == 'true'
+ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'False').lower() == 'false'
 
 # Other parameters
 TOP_P = float(os.getenv('TOP_P', '0.95'))
