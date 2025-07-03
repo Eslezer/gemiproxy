@@ -13,7 +13,7 @@ TEMPERATURE = float(os.getenv('TEMPERATURE', '0.8'))
 ENABLE_NSFW = os.getenv('ENABLE_NSFW', 'True').lower() == 'true'
 ENABLE_THINKING = os.getenv('ENABLE_THINKING', 'True').lower() == 'true'
 DISPLAY_THINKING_IN_CONSOLE = os.getenv('DISPLAY_THINKING_IN_CONSOLE', 'True').lower() == 'true'
-ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'False').lower() == 'false'
+ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'False').lower() == 'true'
 
 # Other parameters
 TOP_P = float(os.getenv('TOP_P', '0.95'))
@@ -21,9 +21,7 @@ TOP_K = int(os.getenv('TOP_K', '40'))
 MAX_TOKENS = int(os.getenv('MAX_TOKENS', '10000'))
 FREQUENCY_PENALTY = float(os.getenv('FREQUENCY_PENALTY', '0'))
 PRESENCE_PENALTY = float(os.getenv('PRESENCE_PENALTY', '0'))
-CUSTOM_ASSISTANT_PROMPT = """Okay! Let me start by doing the reasoning. I will close it properly and then open the response
-
-<think>"""
+CUSTOM_ASSISTANT_PROMPT = """<think>"""
 
 # Enhanced NSFW prefill for roleplay (only used if ENABLE_NSFW is True)
 NSFW_PREFILL = r'''<interaction-config>
