@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: janitor-ai-proxy
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: MODEL
+        value: gemini-2.5-pro
+      - key: TEMPERATURE
+        value: 0.8
+      - key: ENABLE_NSFW
+        value: true
+      - key: ENABLE_THINKING
+        value: true
+      - key: DISPLAY_THINKING_IN_CONSOLE
+        value: true
+      - key: ENABLE_GOOGLE_SEARCH
+        value: true
