@@ -9,7 +9,6 @@ from flask_cors import CORS
 
 # Configuration settings - can be modified or set via environment variables
 MODEL = os.getenv('MODEL', 'gemini-2.5-pro')  # or gemini-2.5-flash
-TEMPERATURE = float(os.getenv('TEMPERATURE', '0.8'))
 ENABLE_NSFW = os.getenv('ENABLE_NSFW', 'True').lower() == 'true'
 ENABLE_THINKING = os.getenv('ENABLE_THINKING', 'True').lower() == 'true'
 DISPLAY_THINKING_IN_CONSOLE = os.getenv('DISPLAY_THINKING_IN_CONSOLE', 'True').lower() == 'true'
@@ -392,7 +391,7 @@ def handle_proxy():
 
         # Set up generation config
         generation_config = {
-            "temperature": json_data.get('temperature', TEMPERATURE),
+            "temperature": json_data.get('temperature', 0.8),  # Use JanitorAI's temperature setting
             "maxOutputTokens": json_data.get('max_tokens', MAX_TOKENS),
             "topP": json_data.get('top_p', TOP_P),
             "topK": json_data.get('top_k', TOP_K)
@@ -721,6 +720,7 @@ if __name__ == '__main__':
     print(f" Display Thinking in Console: {'Yes' if DISPLAY_THINKING_IN_CONSOLE else 'No'}")
     print(f" Google Search: {'Enabled' if ENABLE_GOOGLE_SEARCH else 'Disabled'}")
     print(f" NSFW: {'Enabled' if ENABLE_NSFW else 'Disabled'}")
+    print(f" Temperature: Controlled via JanitorAI interface")
     print(f" Parsing Mode: LENIENT (Accepts all responses)")
     print("=" * 60 + "\n")
 
