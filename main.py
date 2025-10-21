@@ -97,6 +97,29 @@ def detect_thinking_mode(messages):
     # Default to OFF if no toggle found
     return False
 
+# Helper function to detect search toggle
+def detect_search_mode(messages):
+    """
+    Detect if Google Search grounding should be enabled based on message content.
+    Searches for <search=on> or <search=off> in all messages.
+    Returns: True if search should be enabled, False otherwise.
+    Default: False (search OFF)
+    """
+    if not messages:
+        return False  # Default to OFF
+
+    # Search through all messages for the toggle strings
+    for msg in messages:
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            if '<search=on>' in content.lower():
+                return True
+            elif '<search=off>' in content.lower():
+                return False
+
+    # Default to OFF if no toggle found
+    return False
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -330,13 +353,13 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.1.0",
-            "info": "Google AI Studio Proxy with Toggle-able Thinking (Render)",
+            "version": "2.2.0",
+            "info": "Google AI Studio Proxy with Toggle-able Thinking & Search (Render)",
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
             "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
             "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
-            "google_search_enabled": ENABLE_GOOGLE_SEARCH,
+            "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
             "parsing_mode": "lenient"
         })
 
@@ -363,14 +386,15 @@ def handle_proxy():
             print("Error: Google AI API key not found in request.")
             return jsonify(create_error_response("Google AI API key required. Provide it in Authorization header (Bearer YOUR_KEY), x-api-key header, or api_key in JSON body/query params.")), 401
 
+        # Detect toggles from messages
+        messages = json_data.get("messages", [])
+        use_thinking = detect_thinking_mode(messages)
+        use_search = detect_search_mode(messages)
+        print(f"Thinking mode detected: {'ON' if use_thinking else 'OFF (default)'}")
+        print(f"Search mode detected: {'ON' if use_search else 'OFF (default)'}")
+
         # Enhanced prefill for NSFW content with thinking instructions
         if ENABLE_NSFW and NSFW_PREFILL:
-            messages = json_data.get("messages", [])
-
-            # Detect thinking mode from messages
-            use_thinking = detect_thinking_mode(messages)
-            print(f"Thinking mode detected: {'ON' if use_thinking else 'OFF (default)'}")
-
             if messages and messages[-1].get("role") == "user":
                 # Add NSFW prefill as SYSTEM role (higher priority)
                 messages.append({"content": NSFW_PREFILL, "role": "system"})
@@ -453,8 +477,8 @@ def handle_proxy():
             "generationConfig": generation_config
         }
 
-        # Add Google Search support if enabled
-        if ENABLE_GOOGLE_SEARCH:
+        # Add Google Search support if enabled via toggle
+        if ENABLE_GOOGLE_SEARCH and use_search:
             google_ai_request["tools"] = [{"google_search": {}}]
             print("Google Search Tool enabled for this request.")
 
@@ -743,7 +767,7 @@ def health_check():
         "nsfw_enabled": ENABLE_NSFW,
         "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
         "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
-        "google_search_enabled": ENABLE_GOOGLE_SEARCH,
+        "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
         "parsing_mode": "lenient"
     })
 
@@ -757,7 +781,8 @@ if __name__ == '__main__':
     print(f" Thinking Mode: Toggle-able (use <thinking=on> or <thinking=off>)")
     print(f" Thinking Default: OFF")
     print(f" Display Thinking in Console: {'Yes' if DISPLAY_THINKING_IN_CONSOLE else 'No'}")
-    print(f" Google Search: {'Enabled' if ENABLE_GOOGLE_SEARCH else 'Disabled'}")
+    print(f" Search Mode: Toggle-able (use <search=on> or <search=off>)")
+    print(f" Search Default: OFF")
     print(f" NSFW: {'Enabled' if ENABLE_NSFW else 'Disabled'}")
     print(f" Temperature: Controlled via JanitorAI interface")
     print(f" Parsing Mode: LENIENT (Accepts all responses)")
