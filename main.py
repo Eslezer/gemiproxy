@@ -12,7 +12,7 @@ MODEL = os.getenv('MODEL', 'gemini-2.5-pro')  # or gemini-2.5-flash
 ENABLE_NSFW = os.getenv('ENABLE_NSFW', 'True').lower() == 'true'
 ENABLE_THINKING = os.getenv('ENABLE_THINKING', 'True').lower() == 'true'
 DISPLAY_THINKING_IN_CONSOLE = os.getenv('DISPLAY_THINKING_IN_CONSOLE', 'True').lower() == 'true'
-ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'False').lower() == 'true'
+ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'True').lower() == 'true'  # Default to True, controlled by toggle
 
 # Other parameters
 TOP_P = float(os.getenv('TOP_P', '0.95'))
@@ -362,13 +362,14 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.3.0",
+            "version": "2.4.0",
             "info": "Google AI Studio Proxy with Toggle-able Thinking & Search + Grounding (Render)",
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
             "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
             "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
             "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
+            "search_env_var": ENABLE_GOOGLE_SEARCH,
             "parsing_mode": "lenient"
         })
 
@@ -419,7 +420,7 @@ def handle_proxy():
                     messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
 
                 # Add search grounding encouragement if search is enabled
-                if ENABLE_GOOGLE_SEARCH and use_search:
+                if use_search and ENABLE_GOOGLE_SEARCH:
                     messages.append({"content": SEARCH_PROMPT, "role": "system"})
 
             elif messages and messages[-1].get("role") == "assistant":
@@ -439,7 +440,7 @@ def handle_proxy():
                     messages.append({"content": REMINDER, "role": "system"})
 
                 # Add search grounding encouragement if search is enabled
-                if ENABLE_GOOGLE_SEARCH and use_search:
+                if use_search and ENABLE_GOOGLE_SEARCH:
                     messages.append({"content": SEARCH_PROMPT, "role": "system"})
 
                 # Add back the original assistant message if it had meaningful content
@@ -495,10 +496,12 @@ def handle_proxy():
         }
 
         # Add Google Search support if enabled via toggle
-        if ENABLE_GOOGLE_SEARCH and use_search:
+        if use_search and ENABLE_GOOGLE_SEARCH:
             google_ai_request["tools"] = [{"google_search": {}}]
-            print("Google Search Tool enabled for this request.")
+            print("✓ Google Search Tool enabled for this request.")
             print(f"DEBUG: Tools being sent to API: {google_ai_request['tools']}")
+        elif use_search and not ENABLE_GOOGLE_SEARCH:
+            print("WARNING: <search=on> detected but ENABLE_GOOGLE_SEARCH env var is False. Search not enabled.")
 
         # Determine endpoint URL based on streaming option
         endpoint = "streamGenerateContent" if is_streaming else "generateContent"
@@ -787,6 +790,7 @@ def health_check():
         "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
         "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
         "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
+        "search_env_var": ENABLE_GOOGLE_SEARCH,
         "parsing_mode": "lenient"
     })
 
@@ -801,7 +805,8 @@ if __name__ == '__main__':
     print(f" Thinking Default: OFF")
     print(f" Display Thinking in Console: {'Yes' if DISPLAY_THINKING_IN_CONSOLE else 'No'}")
     print(f" Search Mode: Toggle-able (use <search=on> or <search=off>)")
-    print(f" Search Default: OFF")
+    print(f" Search Default: OFF (controlled by toggle)")
+    print(f" Search Env Var: {'Enabled' if ENABLE_GOOGLE_SEARCH else 'Disabled (will block search)'}")
     print(f" NSFW: {'Enabled' if ENABLE_NSFW else 'Disabled'}")
     print(f" Temperature: Controlled via JanitorAI interface")
     print(f" Parsing Mode: LENIENT (Accepts all responses)")
