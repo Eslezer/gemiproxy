@@ -71,6 +71,15 @@ This format helps separate your reasoning from the actual roleplay content."""
 # Reminder message for thinking
 REMINDER = "Remember to use <think>...</think> for your reasoning and <response>...</response> for your roleplay content."
 
+# Search grounding encouragement prompt
+SEARCH_PROMPT = """You have access to Google Search grounding. Use this powerful tool to:
+- Find current, up-to-date information beyond your knowledge cutoff
+- Verify facts and get real-time data
+- Research recent events, news, and developments
+- Access the latest information on any topic
+
+When the user asks about current events, recent information, or anything that benefits from real-time data, actively use the Google Search grounding to provide accurate, verified, and up-to-date responses."""
+
 # Simple prefill for when thinking is disabled
 SIMPLE_ASSISTANT_PROMPT = """<think> okay, let's do this </think>"""
 
@@ -353,8 +362,8 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.2.0",
-            "info": "Google AI Studio Proxy with Toggle-able Thinking & Search (Render)",
+            "version": "2.3.0",
+            "info": "Google AI Studio Proxy with Toggle-able Thinking & Search + Grounding (Render)",
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
             "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
@@ -409,6 +418,10 @@ def handle_proxy():
                     # Use simple prefill when thinking is OFF
                     messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
 
+                # Add search grounding encouragement if search is enabled
+                if ENABLE_GOOGLE_SEARCH and use_search:
+                    messages.append({"content": SEARCH_PROMPT, "role": "system"})
+
             elif messages and messages[-1].get("role") == "assistant":
                 # If last message is already assistant, modify the existing structure
                 existing_content = messages[-1].get("content", "")
@@ -424,6 +437,10 @@ def handle_proxy():
                     # Add thinking instructions only if thinking is ON
                     messages.append({"content": THINKING_PROMPT, "role": "system"})
                     messages.append({"content": REMINDER, "role": "system"})
+
+                # Add search grounding encouragement if search is enabled
+                if ENABLE_GOOGLE_SEARCH and use_search:
+                    messages.append({"content": SEARCH_PROMPT, "role": "system"})
 
                 # Add back the original assistant message if it had meaningful content
                 if existing_content.strip() and existing_content.strip() != NSFW_PREFILL.strip():
@@ -481,10 +498,12 @@ def handle_proxy():
         if ENABLE_GOOGLE_SEARCH and use_search:
             google_ai_request["tools"] = [{"google_search": {}}]
             print("Google Search Tool enabled for this request.")
+            print(f"DEBUG: Tools being sent to API: {google_ai_request['tools']}")
 
         # Determine endpoint URL based on streaming option
         endpoint = "streamGenerateContent" if is_streaming else "generateContent"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:{endpoint}?key={api_key}"
+        print(f"DEBUG: API endpoint: /v1beta/models/{selected_model}:{endpoint}")
 
         if is_streaming:
             # Request Server-Sent Events for streaming
