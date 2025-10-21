@@ -71,6 +71,32 @@ This format helps separate your reasoning from the actual roleplay content."""
 # Reminder message for thinking
 REMINDER = "Remember to use <think>...</think> for your reasoning and <response>...</response> for your roleplay content."
 
+# Simple prefill for when thinking is disabled
+SIMPLE_ASSISTANT_PROMPT = """<think> okay, let's do this </think>"""
+
+# Helper function to detect thinking mode toggle
+def detect_thinking_mode(messages):
+    """
+    Detect if thinking mode should be enabled or disabled based on message content.
+    Searches for <thinking=on> or <thinking=off> in all messages.
+    Returns: True if thinking should be enabled, False otherwise.
+    Default: False (thinking OFF)
+    """
+    if not messages:
+        return False  # Default to OFF
+
+    # Search through all messages for the toggle strings
+    for msg in messages:
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            if '<thinking=on>' in content.lower():
+                return True
+            elif '<thinking=off>' in content.lower():
+                return False
+
+    # Default to OFF if no toggle found
+    return False
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -304,11 +330,11 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.0.0",
-            "info": "Google AI Studio Proxy with Lenient Tag-Preserving Parser (Render)",
+            "version": "2.1.0",
+            "info": "Google AI Studio Proxy with Toggle-able Thinking (Render)",
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
-            "thinking_enabled": ENABLE_THINKING,
+            "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
             "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
             "google_search_enabled": ENABLE_GOOGLE_SEARCH,
             "parsing_mode": "lenient"
@@ -340,17 +366,24 @@ def handle_proxy():
         # Enhanced prefill for NSFW content with thinking instructions
         if ENABLE_NSFW and NSFW_PREFILL:
             messages = json_data.get("messages", [])
+
+            # Detect thinking mode from messages
+            use_thinking = detect_thinking_mode(messages)
+            print(f"Thinking mode detected: {'ON' if use_thinking else 'OFF (default)'}")
+
             if messages and messages[-1].get("role") == "user":
                 # Add NSFW prefill as SYSTEM role (higher priority)
                 messages.append({"content": NSFW_PREFILL, "role": "system"})
 
-                if ENABLE_THINKING:
-                    # Add thinking instructions as SYSTEM role
+                if ENABLE_THINKING and use_thinking:
+                    # Add thinking instructions as SYSTEM role (only if thinking is ON)
                     messages.append({"content": THINKING_PROMPT, "role": "system"})
                     messages.append({"content": REMINDER, "role": "system"})
-
-                # Add your custom assistant prompt as the LAST message with assistant role
-                messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
+                    # Add your custom assistant prompt as the LAST message with assistant role
+                    messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
+                else:
+                    # Use simple prefill when thinking is OFF
+                    messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
 
             elif messages and messages[-1].get("role") == "assistant":
                 # If last message is already assistant, modify the existing structure
@@ -362,7 +395,9 @@ def handle_proxy():
 
                 # Add system prompts
                 messages.append({"content": NSFW_PREFILL, "role": "system"})
-                if ENABLE_THINKING:
+
+                if ENABLE_THINKING and use_thinking:
+                    # Add thinking instructions only if thinking is ON
                     messages.append({"content": THINKING_PROMPT, "role": "system"})
                     messages.append({"content": REMINDER, "role": "system"})
 
@@ -370,8 +405,11 @@ def handle_proxy():
                 if existing_content.strip() and existing_content.strip() != NSFW_PREFILL.strip():
                     messages.append(last_assistant)
 
-                # Add your custom assistant prompt as the final message
-                messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
+                # Add appropriate assistant prompt based on thinking mode
+                if ENABLE_THINKING and use_thinking:
+                    messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
+                else:
+                    messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
 
             json_data["messages"] = messages
 
@@ -703,7 +741,7 @@ def health_check():
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "model_selected": MODEL,
         "nsfw_enabled": ENABLE_NSFW,
-        "thinking_enabled": ENABLE_THINKING,
+        "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
         "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
         "google_search_enabled": ENABLE_GOOGLE_SEARCH,
         "parsing_mode": "lenient"
@@ -716,7 +754,8 @@ if __name__ == '__main__':
     print(" Use this URL as your OpenAI API endpoint in JanitorAI")
     print(" Provide your Google AI Studio API key in JanitorAI")
     print(f" Model: {MODEL}")
-    print(f" Thinking Mode: {'Enabled (Lenient)' if ENABLE_THINKING else 'Disabled'}")
+    print(f" Thinking Mode: Toggle-able (use <thinking=on> or <thinking=off>)")
+    print(f" Thinking Default: OFF")
     print(f" Display Thinking in Console: {'Yes' if DISPLAY_THINKING_IN_CONSOLE else 'No'}")
     print(f" Google Search: {'Enabled' if ENABLE_GOOGLE_SEARCH else 'Disabled'}")
     print(f" NSFW: {'Enabled' if ENABLE_NSFW else 'Disabled'}")
