@@ -620,7 +620,7 @@ def handle_proxy():
                         # Finished streaming, check if we have sent anything
                         if not has_sent_data:
                             print("Warning: No content was sent to JanitorAI.")
-                            yield create_error_stream_chunk("No content received from Google AI.")
+                            yield create_error_stream_chunk("No content received from Google AI. Turn off streaming mode and try again.")
                             yield 'data: [DONE]\n\n'
 
                     except requests.exceptions.RequestException as req_err:
