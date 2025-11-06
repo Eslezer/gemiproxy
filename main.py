@@ -129,6 +129,29 @@ def detect_search_mode(messages):
     # Default to OFF if no toggle found
     return False
 
+# Helper function to detect thinkingbox toggle
+def detect_thinkingbox_mode(messages):
+    """
+    Detect if thinking content should be included in response (thinkingbox visible).
+    Searches for <thinkingbox=on> or <thinkingbox=off> in all messages.
+    Returns: True if thinkingbox should be visible (skip parsing), False if thinking should be cut off.
+    Default: False (thinking cut off, parsing enabled)
+    """
+    if not messages:
+        return False  # Default to OFF (parsing enabled, thinking cut off)
+
+    # Search through all messages for the toggle strings
+    for msg in messages:
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            if '<thinkingbox=on>' in content.lower():
+                return True
+            elif '<thinkingbox=off>' in content.lower():
+                return False
+
+    # Default to OFF (parsing enabled, thinking cut off)
+    return False
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -264,9 +287,10 @@ def create_janitor_chunk(content, model_name, finish_reason=None):
 
 # Enhanced streaming parser with lenient tag detection
 class StreamingParser:
-    def __init__(self, display_thinking_in_console):
+    def __init__(self, display_thinking_in_console, skip_parsing=False):
         self.reset()
         self.display_thinking_in_console = display_thinking_in_console
+        self.skip_parsing = skip_parsing  # When True, send everything as-is (thinkingbox=on)
 
     def reset(self):
         self.state = "searching"  # States: "searching", "found_think_end", "in_response", "finished"
@@ -282,6 +306,10 @@ class StreamingParser:
         Keeps </think> and <response> tags in the output.
         Returns: (content_to_send, thinking_for_console, is_complete)
         """
+        # If skip_parsing is True (thinkingbox=on), send everything as-is
+        if self.skip_parsing:
+            return chunk_content, "", False
+
         self.buffer += chunk_content
         self.all_content += chunk_content
         content_to_send = ""
@@ -362,12 +390,13 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.4.0",
-            "info": "Google AI Studio Proxy with Toggle-able Thinking & Search + Grounding (Render)",
+            "version": "2.5.0",
+            "info": "Google AI Studio Proxy with Toggle-able Thinking, Search & ThinkingBox (Render)",
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
             "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
             "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
+            "thinkingbox_mode": "toggle-able (use <thinkingbox=on> to show thinking tags, default: OFF/cut off)",
             "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
             "search_env_var": ENABLE_GOOGLE_SEARCH,
             "parsing_mode": "lenient"
@@ -400,8 +429,10 @@ def handle_proxy():
         messages = json_data.get("messages", [])
         use_thinking = detect_thinking_mode(messages)
         use_search = detect_search_mode(messages)
+        use_thinkingbox = detect_thinkingbox_mode(messages)
         print(f"Thinking mode detected: {'ON' if use_thinking else 'OFF (default)'}")
         print(f"Search mode detected: {'ON' if use_search else 'OFF (default)'}")
+        print(f"Thinkingbox mode detected: {'ON (thinking visible)' if use_thinkingbox else 'OFF (thinking cut off, default)'}")
 
         # Enhanced prefill for NSFW content with thinking instructions
         if ENABLE_NSFW and NSFW_PREFILL:
@@ -521,7 +552,8 @@ def handle_proxy():
                 # Handle streaming response with enhanced parser
                 def generate_stream():
                     response = None
-                    parser = StreamingParser(DISPLAY_THINKING_IN_CONSOLE)
+                    # Skip parsing when thinkingbox=on (user wants to see thinking tags)
+                    parser = StreamingParser(DISPLAY_THINKING_IN_CONSOLE, skip_parsing=use_thinkingbox)
 
                     try:
                         print("Connecting to Google AI for streaming...")
@@ -713,7 +745,8 @@ def handle_proxy():
                 content = validate_and_fix_response(content)
 
                 # Process thinking part for non-streaming responses
-                if ENABLE_THINKING:
+                # Skip parsing if thinkingbox=on (user wants to see thinking tags)
+                if ENABLE_THINKING and not use_thinkingbox:
                     # Extract thinking process using enhanced parser
                     thinking_content, final_response, parsing_success = extract_thinking_and_response(content)
 
@@ -732,6 +765,8 @@ def handle_proxy():
                         content = final_response.strip()
                     elif ENABLE_THINKING:
                         print("WARNING: No thinking tags found in response!")
+                elif use_thinkingbox:
+                    print("INFO: Thinkingbox enabled - sending full response with thinking tags to user")
 
                 finish_reason_str = candidate.get('finishReason', 'stop')  # Default to 'stop'
 
@@ -789,6 +824,7 @@ def health_check():
         "nsfw_enabled": ENABLE_NSFW,
         "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
         "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
+        "thinkingbox_mode": "toggle-able (use <thinkingbox=on> to show thinking tags, default: OFF/cut off)",
         "search_mode": "toggle-able (use <search=on> or <search=off>, default: OFF)",
         "search_env_var": ENABLE_GOOGLE_SEARCH,
         "parsing_mode": "lenient"
@@ -803,6 +839,8 @@ if __name__ == '__main__':
     print(f" Model: {MODEL}")
     print(f" Thinking Mode: Toggle-able (use <thinking=on> or <thinking=off>)")
     print(f" Thinking Default: OFF")
+    print(f" ThinkingBox Mode: Toggle-able (use <thinkingbox=on> to show tags)")
+    print(f" ThinkingBox Default: OFF (thinking cut off from response)")
     print(f" Display Thinking in Console: {'Yes' if DISPLAY_THINKING_IN_CONSOLE else 'No'}")
     print(f" Search Mode: Toggle-able (use <search=on> or <search=off>)")
     print(f" Search Default: OFF (controlled by toggle)")
