@@ -2,6 +2,10 @@ services:
   - type: web
     name: janitor-ai-proxy
     env: python
+    # IMPORTANT: Google Gemini API is geo-blocked in several regions (e.g. Frankfurt,
+    # Singapore). Pin to a US region so requests to generativelanguage.googleapis.com
+    # are accepted. Valid options: oregon, ohio, virginia.
+    region: oregon
     buildCommand: pip install -r requirements.txt gunicorn
     startCommand: gunicorn --bind 0.0.0.0:$PORT main:app
     plan: free

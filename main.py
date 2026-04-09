@@ -566,6 +566,35 @@ def handle_proxy():
                         )
                         print(f"Google AI stream response status: {response.status_code}")
 
+                        # Handle non-200 statuses before raise_for_status so we can
+                        # surface a readable error (especially Google's geo-block).
+                        if response.status_code != 200:
+                            err_body = response.text[:500]
+                            err_detail = err_body
+                            try:
+                                err_json = json.loads(err_body)
+                                if isinstance(err_json, list) and err_json:
+                                    err_json = err_json[0]
+                                if isinstance(err_json, dict) and 'error' in err_json:
+                                    err_detail = err_json['error'].get('message', err_body)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                            if 'User location is not supported' in err_detail:
+                                err_detail = (
+                                    "Google Gemini API is geo-blocked in your proxy's "
+                                    "region. Your Render server is deployed in a region "
+                                    "Google does not support (e.g. Frankfurt or Singapore). "
+                                    "Redeploy the proxy to a US region (Oregon, Ohio, or "
+                                    "Virginia) via render.yaml's 'region' field, then "
+                                    "trigger a manual redeploy on Render."
+                                )
+
+                            print(f"Error: Google AI returned {response.status_code} - {err_detail}")
+                            yield create_error_stream_chunk(err_detail)
+                            yield 'data: [DONE]\n\n'
+                            return
+
                         response.raise_for_status()
 
                         # Variables for tracking streaming state
@@ -707,6 +736,18 @@ def handle_proxy():
                         error_msg = f"{error_msg} - {error_detail}"
                     elif not google_response:
                         error_msg = f"{error_msg} - {response.text[:200]}"
+
+                    # Special-case Google's geo-block error so the user knows what to fix.
+                    # Google returns this when the proxy server's IP is in an unsupported
+                    # region (e.g. EU/UK). The fix is to redeploy the proxy to a US region.
+                    if 'User location is not supported' in error_msg:
+                        error_msg = (
+                            "Google Gemini API is geo-blocked in your proxy's region. "
+                            "Your Render server is deployed in a region Google does not "
+                            "support (e.g. Frankfurt or Singapore). Redeploy the proxy to "
+                            "a US region (Oregon, Ohio, or Virginia) via render.yaml's "
+                            "'region' field, then trigger a manual redeploy on Render."
+                        )
 
                     print(f"Error: {error_msg}")
                     return jsonify(create_error_response(error_msg)), 200
