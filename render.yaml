@@ -18,3 +18,5 @@ services:
         value: true
       - key: ENABLE_GOOGLE_SEARCH
         value: false
+      - key: PREFILL_MODE
+        value: nudge
