@@ -14,6 +14,15 @@ ENABLE_THINKING = os.getenv('ENABLE_THINKING', 'True').lower() == 'true'
 DISPLAY_THINKING_IN_CONSOLE = os.getenv('DISPLAY_THINKING_IN_CONSOLE', 'True').lower() == 'true'
 ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'True').lower() == 'true'  # Default to True, controlled by toggle
 
+# How the assistant prefill is delivered to Gemini.
+#   'nudge'      - (default) prefill text is never sent as a model turn. The request ends on a
+#                  user turn telling the model its reply has already begun, and the proxy feeds
+#                  the prefill text through its own response parser so parsing behaves as before.
+#   'model_turn' - legacy behaviour: append the prefill as a trailing model turn and hope the API
+#                  continues it. Kept so the old path can be compared against the new one.
+#   'off'        - no prefill at all.
+PREFILL_MODE = os.getenv('PREFILL_MODE', 'nudge').lower()
+
 # Other parameters
 TOP_P = float(os.getenv('TOP_P', '0.95'))
 TOP_K = int(os.getenv('TOP_K', '40'))
@@ -83,6 +92,27 @@ When the user asks about current events, recent information, or anything that be
 # Simple prefill for when thinking is disabled
 SIMPLE_ASSISTANT_PROMPT = """<think> okay, let's do this </think>"""
 
+# OpenAI-compatible clients may send `content` as a plain string or as an array of typed
+# parts ([{"type": "text", "text": "..."}]). Everything downstream wants plain text.
+def normalize_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                text = part.get('text')
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "\n".join(chunks)
+    if isinstance(content, dict):
+        text = content.get('text')
+        if isinstance(text, str):
+            return text
+    return ""
+
 # Helper function to detect thinking mode toggle
 def detect_thinking_mode(messages):
     """
@@ -96,12 +126,11 @@ def detect_thinking_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<thinking=on>' in content.lower():
-                return True
-            elif '<thinking=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<thinking=on>' in content:
+            return True
+        elif '<thinking=off>' in content:
+            return False
 
     # Default to OFF if no toggle found
     return False
@@ -119,12 +148,11 @@ def detect_search_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<search=on>' in content.lower():
-                return True
-            elif '<search=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<search=on>' in content:
+            return True
+        elif '<search=off>' in content:
+            return False
 
     # Default to OFF if no toggle found
     return False
@@ -142,19 +170,81 @@ def detect_thinkingbox_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<thinkingbox=on>' in content.lower():
-                return True
-            elif '<thinkingbox=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<thinkingbox=on>' in content:
+            return True
+        elif '<thinkingbox=off>' in content:
+            return False
 
     # Default to OFF (parsing enabled, thinking cut off)
     return False
 
+# Build the trailing user turn that stands in for a real assistant prefill.
+def build_prefill_nudge(prefill_text):
+    """
+    Gemini no longer reliably continues a request that ends on a model turn, so instead of
+    handing it a half-finished assistant message we end on a user turn that describes the
+    half-finished message. The model then writes the continuation, which is exactly what a
+    real prefill returned, so the client sees the same reply it always did.
+    """
+    return (
+        "(OOC: Your reply has already been started for you. So far it reads exactly:\n"
+        "---\n"
+        f"{prefill_text}\n"
+        "---\n"
+        "Continue writing from precisely that point as one seamless message. Do not repeat the "
+        "text above, do not start your reply over, and do not acknowledge this note.)"
+    )
+
+# Collect everything that belongs in Gemini's systemInstruction field.
+def build_system_instruction(carried_system_texts, use_thinking, use_search):
+    """
+    Returns the combined system instruction text, or "" when there is nothing to send.
+    `carried_system_texts` are the system messages that came in on the request itself.
+    """
+    parts = list(carried_system_texts)
+
+    if ENABLE_NSFW and NSFW_PREFILL:
+        parts.append(NSFW_PREFILL)
+
+    if ENABLE_THINKING and use_thinking:
+        parts.append(THINKING_PROMPT)
+        parts.append(REMINDER)
+
+    if use_search and ENABLE_GOOGLE_SEARCH:
+        parts.append(SEARCH_PROMPT)
+
+    return "\n\n".join(p for p in parts if p and p.strip())
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# The upstream URL carries ?key=<API key>, and requests' HTTPError text embeds that URL.
+# Never let it reach the client or the logs.
+def scrub_key(text, api_key):
+    text = str(text)
+    if api_key:
+        text = text.replace(api_key, "***")
+    return re.sub(r'key=[^&\s]+', 'key=***', text)
+
+# Pull the human-readable message out of a Google error body.
+def describe_google_error(status_code, body_text, api_key):
+    detail = ""
+    try:
+        parsed = json.loads(body_text)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+        if isinstance(parsed, dict) and 'error' in parsed:
+            err = parsed['error']
+            detail = err.get('message', '')
+            if err.get('status'):
+                detail = f"[{err['status']}] {detail}" if detail else err['status']
+    except (ValueError, TypeError, KeyError):
+        pass
+    if not detail:
+        detail = (body_text or "").strip()[:400]
+    return scrub_key(f"Google AI returned {status_code}: {detail}", api_key)
 
 # Error response formatter
 def create_error_response(error_message):
@@ -256,20 +346,38 @@ def get_safety_settings(model_name):
 
 # Transform JanitorAI messages to Google AI format
 def transform_janitor_to_google_ai(messages):
+    """
+    Returns (contents, system_texts).
+
+    System messages are pulled out rather than mapped to a model turn - sending them as
+    'model' made every instruction read as something Gemini had already said itself, which
+    is much weaker than the dedicated systemInstruction field.
+    """
     if not messages or not isinstance(messages, list):
-        return []
+        return [], []
+
     google_ai_contents = []
+    system_texts = []
+
     for msg in messages:
         role = msg.get('role')
-        content = msg.get('content')
-        if role in ['user', 'assistant', 'system'] and content:
-            # Map 'system' and 'assistant' from OpenAI format to 'model' for Gemini
-            google_role = "user" if role == 'user' else "model"
+        content = normalize_content(msg.get('content'))
+        if not content.strip():
+            continue
+
+        if role == 'system':
+            system_texts.append(content)
+        elif role in ('user', 'assistant'):
             google_ai_contents.append({
-                "role": google_role,
+                "role": "user" if role == 'user' else "model",
                 "parts": [{"text": content}]
             })
-    return google_ai_contents
+
+    # Gemini expects the conversation to open on a user turn.
+    if google_ai_contents and google_ai_contents[0]["role"] == "model":
+        google_ai_contents.insert(0, {"role": "user", "parts": [{"text": "(Continue.)"}]})
+
+    return google_ai_contents, system_texts
 
 # Function to create a JanitorAI-compatible chunk for streaming
 def create_janitor_chunk(content, model_name, finish_reason=None):
@@ -383,6 +491,23 @@ class StreamingParser:
         is_complete = self.state == "finished"
         return content_to_send, thinking_for_console, is_complete
 
+    def finalize(self):
+        """
+        Flush anything still held back once the stream ends.
+
+        While in "searching" the parser buffers everything, waiting for a </think> or
+        <response> marker. If the model never emits one, that buffer would otherwise be
+        dropped and the client would be told no content arrived. The non-streaming path
+        already falls back to treating untagged output as the response, so do the same here.
+        """
+        leftover = self.buffer
+        self.buffer = ""
+        if leftover and self.state in ("searching", "found_think_end"):
+            self.response_content += leftover
+            self.state = "in_response"
+            return leftover
+        return ""
+
 # Proxy endpoint for JanitorAI
 @app.route('/', methods=["GET", "POST"])
 @app.route('/v1/chat/completions', methods=["POST"])
@@ -390,8 +515,9 @@ def handle_proxy():
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "version": "2.5.0",
+            "version": "2.6.0",
             "info": "Google AI Studio Proxy with Toggle-able Thinking, Search & ThinkingBox (Render)",
+            "prefill_mode": PREFILL_MODE,
             "model": MODEL,
             "nsfw_enabled": ENABLE_NSFW,
             "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
@@ -434,68 +560,47 @@ def handle_proxy():
         print(f"Search mode detected: {'ON' if use_search else 'OFF (default)'}")
         print(f"Thinkingbox mode detected: {'ON (thinking visible)' if use_thinkingbox else 'OFF (thinking cut off, default)'}")
 
-        # Enhanced prefill for NSFW content with thinking instructions
-        if ENABLE_NSFW and NSFW_PREFILL:
-            if messages and messages[-1].get("role") == "user":
-                # Add NSFW prefill as SYSTEM role (higher priority)
-                messages.append({"content": NSFW_PREFILL, "role": "system"})
-
-                if ENABLE_THINKING and use_thinking:
-                    # Add thinking instructions as SYSTEM role (only if thinking is ON)
-                    messages.append({"content": THINKING_PROMPT, "role": "system"})
-                    messages.append({"content": REMINDER, "role": "system"})
-                    # Add your custom assistant prompt as the LAST message with assistant role
-                    messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
-                else:
-                    # Use simple prefill when thinking is OFF
-                    messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
-
-                # Add search grounding encouragement if search is enabled
-                if use_search and ENABLE_GOOGLE_SEARCH:
-                    messages.append({"content": SEARCH_PROMPT, "role": "system"})
-
-            elif messages and messages[-1].get("role") == "assistant":
-                # If last message is already assistant, modify the existing structure
-                existing_content = messages[-1].get("content", "")
-
-                # Insert system messages before the existing assistant message
-                # Remove the last assistant message temporarily
-                last_assistant = messages.pop()
-
-                # Add system prompts
-                messages.append({"content": NSFW_PREFILL, "role": "system"})
-
-                if ENABLE_THINKING and use_thinking:
-                    # Add thinking instructions only if thinking is ON
-                    messages.append({"content": THINKING_PROMPT, "role": "system"})
-                    messages.append({"content": REMINDER, "role": "system"})
-
-                # Add search grounding encouragement if search is enabled
-                if use_search and ENABLE_GOOGLE_SEARCH:
-                    messages.append({"content": SEARCH_PROMPT, "role": "system"})
-
-                # Add back the original assistant message if it had meaningful content
-                if existing_content.strip() and existing_content.strip() != NSFW_PREFILL.strip():
-                    messages.append(last_assistant)
-
-                # Add appropriate assistant prompt based on thinking mode
-                if ENABLE_THINKING and use_thinking:
-                    messages.append({"content": CUSTOM_ASSISTANT_PROMPT, "role": "assistant"})
-                else:
-                    messages.append({"content": SIMPLE_ASSISTANT_PROMPT, "role": "assistant"})
-
-            json_data["messages"] = messages
+        # Work out the prefill text. This is what the assistant's reply is supposed to
+        # start with; it is no longer sent to Gemini as a trailing model turn.
+        prefill_text = ""
+        if ENABLE_NSFW and NSFW_PREFILL and PREFILL_MODE != 'off':
+            if ENABLE_THINKING and use_thinking:
+                prefill_text = CUSTOM_ASSISTANT_PROMPT
+            else:
+                prefill_text = SIMPLE_ASSISTANT_PROMPT
+        print(f"Prefill mode: {PREFILL_MODE}{' (no prefill text)' if not prefill_text else ''}")
 
         # Use the model from settings or from request if provided
         selected_model = json_data.get('model') if json_data.get('model') and json_data['model'] != "custom" else MODEL
         print(f"Using model: {selected_model}")
 
         # Convert JanitorAI messages to Google AI format
-        google_ai_contents = transform_janitor_to_google_ai(json_data.get('messages', []))
+        google_ai_contents, carried_system_texts = transform_janitor_to_google_ai(messages)
 
         if not google_ai_contents:
-            print("Error: Invalid or empty message format received.")
-            return jsonify(create_error_response("Invalid or empty message format")), 400
+            if carried_system_texts:
+                # Everything arrived as system messages; those now live in systemInstruction,
+                # so give Gemini a minimal user turn to answer rather than rejecting the request.
+                google_ai_contents = [{"role": "user", "parts": [{"text": "(Begin.)"}]}]
+            else:
+                # Returned as 200 like every other error in this proxy, so the client shows
+                # the message instead of a bare "400 Bad Request" with no explanation.
+                print("Error: Invalid or empty message format received.")
+                return jsonify(create_error_response(
+                    "No usable message content was found in the request. "
+                    "Every message was empty or had an unrecognised content format."
+                )), 200
+
+        # Attach the prefill without ending the request on a model turn.
+        if prefill_text:
+            if PREFILL_MODE == 'model_turn':
+                # Legacy path - only works if the API still continues a trailing model turn.
+                google_ai_contents.append({"role": "model", "parts": [{"text": prefill_text}]})
+            else:
+                google_ai_contents.append({
+                    "role": "user",
+                    "parts": [{"text": build_prefill_nudge(prefill_text)}]
+                })
 
         # Get safety settings
         safety_settings = get_safety_settings(selected_model)
@@ -526,9 +631,15 @@ def handle_proxy():
             "generationConfig": generation_config
         }
 
+        # Steering prompts go in systemInstruction rather than being faked as model turns.
+        system_instruction = build_system_instruction(carried_system_texts, use_thinking, use_search)
+        if system_instruction:
+            google_ai_request["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+            print(f"System instruction attached ({len(system_instruction)} chars)")
+
         # Add Google Search support if enabled via toggle
         if use_search and ENABLE_GOOGLE_SEARCH:
-            google_ai_request["tools"] = [{"google_search": {}}]
+            google_ai_request["tools"] = [{"googleSearch": {}}]
             print("✓ Google Search Tool enabled for this request.")
             print(f"DEBUG: Tools being sent to API: {google_ai_request['tools']}")
         elif use_search and not ENABLE_GOOGLE_SEARCH:
@@ -566,11 +677,37 @@ def handle_proxy():
                         )
                         print(f"Google AI stream response status: {response.status_code}")
 
-                        response.raise_for_status()
+                        # raise_for_status() would discard the response body, which is where
+                        # Google explains what was actually wrong with the request, and its
+                        # exception text embeds the key-bearing URL. Report the body instead.
+                        if response.status_code != 200:
+                            detail = describe_google_error(
+                                response.status_code, response.text, api_key)
+                            print(f"Error: {detail}")
+                            print(f"DEBUG: request keys sent: {sorted(google_ai_request.keys())}")
+                            print(f"DEBUG: content roles sent: {[c.get('role') for c in google_ai_contents]}")
+                            yield create_error_stream_chunk(detail)
+                            yield 'data: [DONE]\n\n'
+                            return
 
                         # Variables for tracking streaming state
                         has_sent_data = False
                         last_chunk_time = time.time()
+
+                        # Prime the parser with the prefill so it starts in the same state a
+                        # real prefill would have left it in. A real prefill's text was part of
+                        # the request and never reached the client, so whatever the parser
+                        # returns for it is discarded rather than sent. This also fixes the
+                        # closed-think-block case: without priming, the parser sat in
+                        # "searching" waiting for a </think> the model was never going to emit
+                        # and swallowed the entire reply.
+                        if prefill_text and PREFILL_MODE != 'model_turn':
+                            _, pre_thinking, _ = parser.process_chunk(prefill_text)
+                            if pre_thinking and DISPLAY_THINKING_IN_CONSOLE:
+                                print("\n" + "="*50)
+                                print("THINKING PROCESS (prefill):")
+                                print(pre_thinking)
+                                print("="*50)
 
                         for chunk in response.iter_lines():
                             if chunk:
@@ -603,6 +740,10 @@ def handle_proxy():
                                         candidate = data['candidates'][0]
                                         if 'content' in candidate and 'parts' in candidate['content']:
                                             for part in candidate['content']['parts']:
+                                                # Native reasoning parts are flagged thought=true
+                                                # and must not be mixed into the reply text.
+                                                if part.get('thought'):
+                                                    continue
                                                 if 'text' in part:
                                                     content_delta += part['text']
                                         finish_reason = candidate.get('finishReason')
@@ -649,6 +790,13 @@ def handle_proxy():
                                 yield 'data: [DONE]\n\n'
                                 break
 
+                        # Flush any content the parser was still holding back.
+                        leftover = parser.finalize()
+                        if leftover:
+                            print("INFO: Flushed buffered content with no thinking tags")
+                            has_sent_data = True
+                            yield f'data: {json.dumps(create_janitor_chunk(leftover, selected_model))}\n\n'
+
                         # Finished streaming, check if we have sent anything
                         if not has_sent_data:
                             print("Warning: No content was sent to JanitorAI.")
@@ -656,12 +804,12 @@ def handle_proxy():
                             yield 'data: [DONE]\n\n'
 
                     except requests.exceptions.RequestException as req_err:
-                        error_msg = f"Network error: {req_err}"
+                        error_msg = scrub_key(f"Network error: {req_err}", api_key)
                         print(error_msg)
                         yield create_error_stream_chunk(error_msg)
                         yield 'data: [DONE]\n\n'
                     except Exception as e:
-                        error_msg = f"Error during streaming: {e}"
+                        error_msg = scrub_key(f"Error during streaming: {e}", api_key)
                         print(error_msg)
                         traceback.print_exc()
                         yield create_error_stream_chunk(error_msg)
@@ -701,14 +849,11 @@ def handle_proxy():
 
                 # Check for HTTP errors
                 if response.status_code != 200:
-                    error_msg = f"Google AI returned error code: {response.status_code}"
-                    if google_response and 'error' in google_response:
-                        error_detail = google_response['error'].get('message', response.text[:200])
-                        error_msg = f"{error_msg} - {error_detail}"
-                    elif not google_response:
-                        error_msg = f"{error_msg} - {response.text[:200]}"
-
+                    error_msg = describe_google_error(
+                        response.status_code, response.text, api_key)
                     print(f"Error: {error_msg}")
+                    print(f"DEBUG: request keys sent: {sorted(google_ai_request.keys())}")
+                    print(f"DEBUG: content roles sent: {[c.get('role') for c in google_ai_contents]}")
                     return jsonify(create_error_response(error_msg)), 200
 
                 # Check for logical errors in a 200 OK response
@@ -738,6 +883,10 @@ def handle_proxy():
                 content = ""
                 if 'content' in candidate and 'parts' in candidate['content']:
                     for part in candidate['content']['parts']:
+                        # Native reasoning parts are flagged thought=true and must not be
+                        # mixed into the reply text.
+                        if part.get('thought'):
+                            continue
                         if 'text' in part:
                             content += part['text']
 
@@ -799,7 +948,7 @@ def handle_proxy():
             print(f"Error: Request to Google AI timed out after {timeout_seconds} seconds.")
             return jsonify(create_error_response("Request to Google AI timed out.")), 200
         except requests.exceptions.RequestException as e:
-            error_msg = f"Error connecting to Google AI: {e}"
+            error_msg = scrub_key(f"Error connecting to Google AI: {e}", api_key)
             print(error_msg)
             return jsonify(create_error_response(error_msg)), 200
         except Exception as e:
@@ -822,6 +971,7 @@ def health_check():
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "model_selected": MODEL,
         "nsfw_enabled": ENABLE_NSFW,
+        "prefill_mode": PREFILL_MODE,
         "thinking_mode": "toggle-able (use <thinking=on> or <thinking=off>, default: OFF)",
         "thinking_in_console": DISPLAY_THINKING_IN_CONSOLE,
         "thinkingbox_mode": "toggle-able (use <thinkingbox=on> to show thinking tags, default: OFF/cut off)",
@@ -846,6 +996,7 @@ if __name__ == '__main__':
     print(f" Search Default: OFF (controlled by toggle)")
     print(f" Search Env Var: {'Enabled' if ENABLE_GOOGLE_SEARCH else 'Disabled (will block search)'}")
     print(f" NSFW: {'Enabled' if ENABLE_NSFW else 'Disabled'}")
+    print(f" Prefill Mode: {PREFILL_MODE} (nudge | model_turn | off)")
     print(f" Temperature: Controlled via JanitorAI interface")
     print(f" Parsing Mode: LENIENT (Accepts all responses)")
     print("=" * 60 + "\n")
