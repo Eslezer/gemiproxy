@@ -92,6 +92,27 @@ When the user asks about current events, recent information, or anything that be
 # Simple prefill for when thinking is disabled
 SIMPLE_ASSISTANT_PROMPT = """<think> okay, let's do this </think>"""
 
+# OpenAI-compatible clients may send `content` as a plain string or as an array of typed
+# parts ([{"type": "text", "text": "..."}]). Everything downstream wants plain text.
+def normalize_content(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                text = part.get('text')
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "\n".join(chunks)
+    if isinstance(content, dict):
+        text = content.get('text')
+        if isinstance(text, str):
+            return text
+    return ""
+
 # Helper function to detect thinking mode toggle
 def detect_thinking_mode(messages):
     """
@@ -105,12 +126,11 @@ def detect_thinking_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<thinking=on>' in content.lower():
-                return True
-            elif '<thinking=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<thinking=on>' in content:
+            return True
+        elif '<thinking=off>' in content:
+            return False
 
     # Default to OFF if no toggle found
     return False
@@ -128,12 +148,11 @@ def detect_search_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<search=on>' in content.lower():
-                return True
-            elif '<search=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<search=on>' in content:
+            return True
+        elif '<search=off>' in content:
+            return False
 
     # Default to OFF if no toggle found
     return False
@@ -151,12 +170,11 @@ def detect_thinkingbox_mode(messages):
 
     # Search through all messages for the toggle strings
     for msg in messages:
-        content = msg.get('content', '')
-        if isinstance(content, str):
-            if '<thinkingbox=on>' in content.lower():
-                return True
-            elif '<thinkingbox=off>' in content.lower():
-                return False
+        content = normalize_content(msg.get('content')).lower()
+        if '<thinkingbox=on>' in content:
+            return True
+        elif '<thinkingbox=off>' in content:
+            return False
 
     # Default to OFF (parsing enabled, thinking cut off)
     return False
@@ -201,6 +219,32 @@ def build_system_instruction(carried_system_texts, use_thinking, use_search):
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# The upstream URL carries ?key=<API key>, and requests' HTTPError text embeds that URL.
+# Never let it reach the client or the logs.
+def scrub_key(text, api_key):
+    text = str(text)
+    if api_key:
+        text = text.replace(api_key, "***")
+    return re.sub(r'key=[^&\s]+', 'key=***', text)
+
+# Pull the human-readable message out of a Google error body.
+def describe_google_error(status_code, body_text, api_key):
+    detail = ""
+    try:
+        parsed = json.loads(body_text)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+        if isinstance(parsed, dict) and 'error' in parsed:
+            err = parsed['error']
+            detail = err.get('message', '')
+            if err.get('status'):
+                detail = f"[{err['status']}] {detail}" if detail else err['status']
+    except (ValueError, TypeError, KeyError):
+        pass
+    if not detail:
+        detail = (body_text or "").strip()[:400]
+    return scrub_key(f"Google AI returned {status_code}: {detail}", api_key)
 
 # Error response formatter
 def create_error_response(error_message):
@@ -317,8 +361,8 @@ def transform_janitor_to_google_ai(messages):
 
     for msg in messages:
         role = msg.get('role')
-        content = msg.get('content')
-        if not content or not isinstance(content, str):
+        content = normalize_content(msg.get('content'))
+        if not content.strip():
             continue
 
         if role == 'system':
@@ -539,8 +583,13 @@ def handle_proxy():
                 # so give Gemini a minimal user turn to answer rather than rejecting the request.
                 google_ai_contents = [{"role": "user", "parts": [{"text": "(Begin.)"}]}]
             else:
+                # Returned as 200 like every other error in this proxy, so the client shows
+                # the message instead of a bare "400 Bad Request" with no explanation.
                 print("Error: Invalid or empty message format received.")
-                return jsonify(create_error_response("Invalid or empty message format")), 400
+                return jsonify(create_error_response(
+                    "No usable message content was found in the request. "
+                    "Every message was empty or had an unrecognised content format."
+                )), 200
 
         # Attach the prefill without ending the request on a model turn.
         if prefill_text:
@@ -590,7 +639,7 @@ def handle_proxy():
 
         # Add Google Search support if enabled via toggle
         if use_search and ENABLE_GOOGLE_SEARCH:
-            google_ai_request["tools"] = [{"google_search": {}}]
+            google_ai_request["tools"] = [{"googleSearch": {}}]
             print("✓ Google Search Tool enabled for this request.")
             print(f"DEBUG: Tools being sent to API: {google_ai_request['tools']}")
         elif use_search and not ENABLE_GOOGLE_SEARCH:
@@ -628,7 +677,18 @@ def handle_proxy():
                         )
                         print(f"Google AI stream response status: {response.status_code}")
 
-                        response.raise_for_status()
+                        # raise_for_status() would discard the response body, which is where
+                        # Google explains what was actually wrong with the request, and its
+                        # exception text embeds the key-bearing URL. Report the body instead.
+                        if response.status_code != 200:
+                            detail = describe_google_error(
+                                response.status_code, response.text, api_key)
+                            print(f"Error: {detail}")
+                            print(f"DEBUG: request keys sent: {sorted(google_ai_request.keys())}")
+                            print(f"DEBUG: content roles sent: {[c.get('role') for c in google_ai_contents]}")
+                            yield create_error_stream_chunk(detail)
+                            yield 'data: [DONE]\n\n'
+                            return
 
                         # Variables for tracking streaming state
                         has_sent_data = False
@@ -744,12 +804,12 @@ def handle_proxy():
                             yield 'data: [DONE]\n\n'
 
                     except requests.exceptions.RequestException as req_err:
-                        error_msg = f"Network error: {req_err}"
+                        error_msg = scrub_key(f"Network error: {req_err}", api_key)
                         print(error_msg)
                         yield create_error_stream_chunk(error_msg)
                         yield 'data: [DONE]\n\n'
                     except Exception as e:
-                        error_msg = f"Error during streaming: {e}"
+                        error_msg = scrub_key(f"Error during streaming: {e}", api_key)
                         print(error_msg)
                         traceback.print_exc()
                         yield create_error_stream_chunk(error_msg)
@@ -789,14 +849,11 @@ def handle_proxy():
 
                 # Check for HTTP errors
                 if response.status_code != 200:
-                    error_msg = f"Google AI returned error code: {response.status_code}"
-                    if google_response and 'error' in google_response:
-                        error_detail = google_response['error'].get('message', response.text[:200])
-                        error_msg = f"{error_msg} - {error_detail}"
-                    elif not google_response:
-                        error_msg = f"{error_msg} - {response.text[:200]}"
-
+                    error_msg = describe_google_error(
+                        response.status_code, response.text, api_key)
                     print(f"Error: {error_msg}")
+                    print(f"DEBUG: request keys sent: {sorted(google_ai_request.keys())}")
+                    print(f"DEBUG: content roles sent: {[c.get('role') for c in google_ai_contents]}")
                     return jsonify(create_error_response(error_msg)), 200
 
                 # Check for logical errors in a 200 OK response
@@ -891,7 +948,7 @@ def handle_proxy():
             print(f"Error: Request to Google AI timed out after {timeout_seconds} seconds.")
             return jsonify(create_error_response("Request to Google AI timed out.")), 200
         except requests.exceptions.RequestException as e:
-            error_msg = f"Error connecting to Google AI: {e}"
+            error_msg = scrub_key(f"Error connecting to Google AI: {e}", api_key)
             print(error_msg)
             return jsonify(create_error_response(error_msg)), 200
         except Exception as e:
