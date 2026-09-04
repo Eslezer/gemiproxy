@@ -1,0 +1,20 @@
+# Cloudflare Workers deployment for the JanitorAI <-> Gemini proxy.
+#
+# The Python app (main.py) is the Render deployment; Workers cannot run it, since it has no
+# WSGI for Flask and the synchronous `requests` library does not work under Pyodide. worker.js
+# is the JavaScript port and is what Workers deploys.
+#
+# Deploying from a phone: Cloudflare dashboard -> Workers & Pages -> Create -> Connect to Git,
+# pick this repository, and Cloudflare reads this file. Every push then redeploys.
+
+name = "gemiproxy"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+MODEL = "gemini-2.5-pro"
+ENABLE_NSFW = "true"
+ENABLE_THINKING = "true"
+DISPLAY_THINKING_IN_CONSOLE = "true"
+ENABLE_GOOGLE_SEARCH = "false"
+PREFILL_MODE = "nudge"
